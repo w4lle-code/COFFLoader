@@ -32,7 +32,7 @@
 #define PREPENDSYMBOLVALUE "__imp__"
 #endif
 
-#define COFFLOADER_RETURN_VAL_IF(expr, val, fmt, ...) if ((expr)) { DEBUG_PRINT(fmt, ##__VA_ARGS__); return val; }
+#define COFFLOADER_RETURN_VAL_IF(expr, val, fmt, ...) if ((expr)) {printf("Entrand en COFFLOADER_RETURN_VAL_IF\n"); DEBUG_PRINT(fmt, ##__VA_ARGS__); return val; }
 
 unsigned char* unhexlify(unsigned char* value, int *outlen) {
     unsigned char* retval = NULL;
@@ -177,6 +177,7 @@ int LoadAndRun(char *argsBuffer, uint32_t bufferSize, goCallback callback)
 {
 #if defined(_WIN32)
     // argsBuffer:  functionname |coff_data |  args_data
+    printf("Entrando LoadAndRun\n");
     datap parser;
     char *functionName;
     unsigned char *coff_data = NULL;
@@ -186,18 +187,22 @@ int LoadAndRun(char *argsBuffer, uint32_t bufferSize, goCallback callback)
 
     BeaconDataParse(&parser, argsBuffer, bufferSize);
     functionName = BeaconDataExtract(&parser, NULL);
+    printf("functionName: %s\n", functionName);
     if (functionName == NULL)
     {
+        printf("functionName es NULL\n");
         return 1;
     }
     coff_data = (unsigned char *)BeaconDataExtract(&parser, &filesize);
     if (coff_data == NULL)
     {
+        printf("coff_data es NULL\n");
         return 1;
     }
     arguments_data = (unsigned char *)BeaconDataExtract(&parser, &arguments_size);
     if (arguments_data == NULL)
     {
+        printf("arguments_data es NULL\n");
         return 1;
     }
 
@@ -212,6 +217,8 @@ int LoadAndRun(char *argsBuffer, uint32_t bufferSize, goCallback callback)
  * types need to be handled, and needs to have different arguments for use
  * in any agent. */
 int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, unsigned char* argumentdata, int argumentSize, goCallback callback) {
+    printf("Ejecutando RunCOFF\n");
+    printf("functionname: %s coff_data: %zu filesize: %d argumentdata: %zu argumentSize: %d\n", functionname, sizeof(coff_data), filesize, sizeof(argumentdata), argumentSize);
     coff_sect_t *coff_sect_ptr = NULL;
     coff_reloc_t *coff_reloc_ptr = NULL;
     int retcode = 0;
@@ -251,7 +258,7 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
             "COFF file contains extraneous data\n");
 
     struct coff_sym *coff_sym_ptr = (struct coff_sym*)(coff_data + coff_header_ptr->PointerToSymbolTable);
-
+    printf("pasando todas las validaciones\n");
 #ifdef _WIN32
     void* funcptrlocation = NULL;
     size_t offsetvalue = 0;
@@ -265,6 +272,7 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
     /* Set the input function name to match the 32 bit version */
     entryfuncname = calloc(strlen(functionname) + 2, 1);
     if (entryfuncname == NULL) {
+        printf("entryfuncname es NULL\n");
         return 1;
     }
     (void)sprintf(entryfuncname, "_%s", functionname);
@@ -284,14 +292,14 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
     int relocationCount = 0;
 #endif
 
-    DEBUG_PRINT("Machine 0x%X\n", coff_header_ptr->Machine);
-    DEBUG_PRINT("Number of sections: %d\n", coff_header_ptr->NumberOfSections);
-    DEBUG_PRINT("TimeDateStamp : %X\n", coff_header_ptr->TimeDateStamp);
-    DEBUG_PRINT("PointerToSymbolTable : 0x%X\n", coff_header_ptr->PointerToSymbolTable);
-    DEBUG_PRINT("NumberOfSymbols: %u\n", coff_header_ptr->NumberOfSymbols);
-    DEBUG_PRINT("OptionalHeaderSize: %d\n", coff_header_ptr->SizeOfOptionalHeader);
-    DEBUG_PRINT("Characteristics: %d\n", coff_header_ptr->Characteristics);
-    DEBUG_PRINT("\n");
+    printf("Machine 0x%X\n", coff_header_ptr->Machine);
+    printf("Number of sections: %d\n", coff_header_ptr->NumberOfSections);
+    printf("TimeDateStamp : %X\n", coff_header_ptr->TimeDateStamp);
+    printf("PointerToSymbolTable : 0x%X\n", coff_header_ptr->PointerToSymbolTable);
+    printf("NumberOfSymbols: %u\n", coff_header_ptr->NumberOfSymbols);
+    printf("OptionalHeaderSize: %d\n", coff_header_ptr->SizeOfOptionalHeader);
+    printf("Characteristics: %d\n", coff_header_ptr->Characteristics);
+    printf("\n");
     /* Actually allocate an array to keep track of the sections */
     sectionMapping = (char**)calloc(sizeof(char*)*(coff_header_ptr->NumberOfSections+1), 1);
 #ifdef DEBUG
