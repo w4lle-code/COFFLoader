@@ -125,32 +125,35 @@ void* process_symbol(char* symbolstring) {
     HMODULE llHandle = NULL;
 #endif
 
+    if (symbolstring == NULL) {
+        return NULL;
+    }
+
     strncpy(localcopy, symbolstring, sizeof(localcopy) - 1);
+
+    /* __C_specific_handler is a static symbol (no __imp_ prefix). It is
+     * resolved up-front in RunCOFF() into the last InternalFunctions entry. */
+    if (strcmp(symbolstring, "__C_specific_handler") == 0) {
+        return (void*)InternalFunctions[BEACON_INTERNAL_FUNCTIONS_COUNT - 1][1];
+    }
+
     if (starts_with(symbolstring, PREPENDSYMBOLVALUE"Beacon") || starts_with(symbolstring, PREPENDSYMBOLVALUE"toWideChar") ||
         starts_with(symbolstring, PREPENDSYMBOLVALUE"GetProcAddress") || starts_with(symbolstring, PREPENDSYMBOLVALUE"LoadLibraryA") ||
-        starts_with(symbolstring, PREPENDSYMBOLVALUE"GetModuleHandleA") || starts_with(symbolstring, PREPENDSYMBOLVALUE"FreeLibrary") ||
-        starts_with(symbolstring, "__C_specific_handler")) {
-        if(strcmp(symbolstring, "__C_specific_handler") == 0)
-        {
-            localfunc = symbolstring;
-            return InternalFunctions[29][1];
-        }
-        else
-        {
-            localfunc = symbolstring + strlen(PREPENDSYMBOLVALUE);
-        }
+        starts_with(symbolstring, PREPENDSYMBOLVALUE"GetModuleHandleA") || starts_with(symbolstring, PREPENDSYMBOLVALUE"FreeLibrary")) {
+        localfunc = symbolstring + strlen(PREPENDSYMBOLVALUE);
         DEBUG_PRINT("\t\tInternalFunction: %s\n", localfunc);
-        /* TODO: Get internal symbol here and set to functionaddress, then
-         * return the pointer to the internal function*/
+        /* Resolve by exact name: a prefix match would resolve unknown symbols
+         * (e.g. BeaconDataIntXyz) to the wrong entry. */
 #if defined(_WIN32)
-        for (tempcounter = 0; tempcounter < 30; tempcounter++) {
+        for (tempcounter = 0; tempcounter < BEACON_INTERNAL_FUNCTIONS_COUNT; tempcounter++) {
             if (InternalFunctions[tempcounter][0] != NULL) {
-                if (starts_with(localfunc, (char*)(InternalFunctions[tempcounter][0]))) {
+                if (strcmp(localfunc, (char*)(InternalFunctions[tempcounter][0])) == 0) {
                     functionaddress = (void*)InternalFunctions[tempcounter][1];
                     return functionaddress;
                 }
             }
         }
+        DEBUG_PRINT("\t\tFailed resolving internal symbol '%s'\n", localfunc);
 #endif
     }
     else if (strncmp(symbolstring, PREPENDSYMBOLVALUE, strlen(PREPENDSYMBOLVALUE)) == 0) {
@@ -159,16 +162,18 @@ void* process_symbol(char* symbolstring) {
 
         locallib = strtok(locallib, "$");
         localfunc = strtok(NULL, "$");
-        DEBUG_PRINT("\t\tLibrary: %s\n", locallib);
-        localfunc = strtok(localfunc, "@");
-        DEBUG_PRINT("\t\tFunction: %s\n", localfunc);
-        /* Resolve the symbols here, and set the functionpointervalue */
+        if (locallib != NULL && localfunc != NULL) {
+            DEBUG_PRINT("\t\tLibrary: %s\n", locallib);
+            localfunc = strtok(localfunc, "@");
+            DEBUG_PRINT("\t\tFunction: %s\n", localfunc);
+            /* Resolve the symbols here, and set the functionpointervalue */
 #if defined(_WIN32)
-        llHandle = LoadLibraryA(locallib);
-        DEBUG_PRINT("\t\tHandle: 0x%lx\n", llHandle);
-        functionaddress = GetProcAddress(llHandle, localfunc);
-        DEBUG_PRINT("\t\tProcAddress: 0x%p\n", functionaddress);
+            llHandle = LoadLibraryA(locallib);
+            DEBUG_PRINT("\t\tHandle: 0x%lx\n", llHandle);
+            functionaddress = GetProcAddress(llHandle, localfunc);
+            DEBUG_PRINT("\t\tProcAddress: 0x%p\n", functionaddress);
 #endif
+        }
     }
     return functionaddress;
 }
@@ -226,8 +231,6 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
     int reloccount = 0;
     unsigned int tempcounter = 0;
     uint32_t symptr = 0;
-    char *outdata = NULL; // sliver
-    int outdataSize = 0; // sliver
 
     COFFLOADER_RETURN_VAL_IF(functionname == NULL, 1, "Function name is NULL\n");
     COFFLOADER_RETURN_VAL_IF(coff_data == NULL, 1, "Can't execute NULL\n");
@@ -259,6 +262,11 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
 
     struct coff_sym *coff_sym_ptr = (struct coff_sym*)(coff_data + coff_header_ptr->PointerToSymbolTable);
     printf("pasando todas las validaciones\n");
+
+    /* Stream Beacon output (including file-download callbacks) to the agent
+     * as the BOF produces it, and reset any leftover token state. */
+    BeaconSetCallback(callback);
+    BeaconResetTokens();
 #ifdef _WIN32
     void* funcptrlocation = NULL;
     size_t offsetvalue = 0;
@@ -277,9 +285,10 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
     }
     (void)sprintf(entryfuncname, "_%s", functionname);
 #endif
-    HMODULE kern = GetModuleHandleA("kernel32.dll");
-    InternalFunctions[29][1] = (unsigned char *) GetProcAddress(kern, "__C_specific_handler");
-    DEBUG_PRINT("found address of %x\n", InternalFunctions[29][1]);
+    /* __C_specific_handler does not live in kernel32.dll; resolve it from the
+     * CRT / ntdll so BOFs with SEH unwind data can link. */
+    InternalFunctions[BEACON_INTERNAL_FUNCTIONS_COUNT - 1][1] = (unsigned char *) BeaconResolveCSpecificHandler();
+    DEBUG_PRINT("found address of %x\n", InternalFunctions[BEACON_INTERNAL_FUNCTIONS_COUNT - 1][1]);
 #ifdef _WIN32
     /* NOTE: I just picked a size, look to see what is max/normal. */
     char** sectionMapping = NULL;
@@ -373,6 +382,12 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
             DEBUG_PRINT("\tVirtualAddress: 0x%X\n", coff_reloc_ptr->VirtualAddress);
             DEBUG_PRINT("\tSymbolTableIndex: 0x%X\n", coff_reloc_ptr->SymbolTableIndex);
             DEBUG_PRINT("\tType: 0x%X\n", coff_reloc_ptr->Type);
+            /* IMAGE_REL_*_ABSOLUTE (0x0): "the relocation is ignored" — a valid
+             * no-op that must not be treated as an unimplemented relocation. */
+            if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_ABSOLUTE) {
+                coff_reloc_ptr = (coff_reloc_t*)(((char*)coff_reloc_ptr) + sizeof(coff_reloc_t));
+                continue;
+            }
             if (coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].first.Name[0] != 0) {
                 symptr = coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].first.value[1];
                 DEBUG_PRINT("\tSymPtr: 0x%X\n", symptr);
@@ -495,8 +510,46 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
                 }
 
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_ADDR32) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)((uintptr_t)sectionMapping[coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber - 1] + coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    DEBUG_PRINT("\tSetting 0x%p to absolute address: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_SECTION) {
+                    uint16_t secIndex = (uint16_t)coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber;
+                    DEBUG_PRINT("\tSetting 0x%p to section index: %d\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, (int)secIndex);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &secIndex, sizeof(uint16_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_SECREL) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    DEBUG_PRINT("\tSetting 0x%p to section-relative offset: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_SECREL7) {
+                    uint8_t result = (uint8_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value & 0x7F);
+                    DEBUG_PRINT("\tSetting 0x%p to 7-bit section-relative offset: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, (unsigned int)result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint8_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_SREL32) {
+                    memcpy(&offsetvalue, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(int32_t));
+                    offsetvalue += (sectionMapping[coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber - 1] - (sectionMapping[counter] + coff_reloc_ptr->VirtualAddress + 4));
+                    offsetvalue += coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value;
+                    DEBUG_PRINT("\t\tSetting 0x%p to relative address: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, offsetvalue);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_PAIR || coff_reloc_ptr->Type == IMAGE_REL_AMD64_SSPAN32) {
+                    /* Companion relocations: the value was already applied by the
+                     * preceding ADDR64/ADDR32NB relocation, nothing to do here. */
+                    DEBUG_PRINT("\tSkipping companion relocation type: %d\n", coff_reloc_ptr->Type);
+                }
                 else {
-                    DEBUG_PRINT("No code for relocation type: %d\n", coff_reloc_ptr->Type);
+                    BeaconPrintf(CALLBACK_ERROR, "[COFFLoader] relocation type 0x%04X is not implemented\n", (unsigned int)coff_reloc_ptr->Type);
                 }
 #else
              /* This is Type == IMAGE_REL_I386_DIR32 relocation code */
@@ -516,6 +569,35 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     DEBUG_PRINT("\tSetting 0x%p to relative address: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, offsetvalue);
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
                     
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_DIR32NB) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)((uintptr_t)sectionMapping[coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber - 1] + coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    DEBUG_PRINT("\tSetting 0x%p to absolute address (NB): 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECTION) {
+                    uint16_t secIndex = (uint16_t)coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber;
+                    DEBUG_PRINT("\tSetting 0x%p to section index: %d\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, (int)secIndex);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &secIndex, sizeof(uint16_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECREL) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    DEBUG_PRINT("\tSetting 0x%p to section-relative offset: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECREL7) {
+                    uint8_t result = (uint8_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value & 0x7F);
+                    DEBUG_PRINT("\tSetting 0x%p to 7-bit section-relative offset: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, (unsigned int)result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint8_t));
+                }
+                else {
+                    BeaconPrintf(CALLBACK_ERROR, "[COFFLoader] relocation type 0x%04X is not implemented\n", (unsigned int)coff_reloc_ptr->Type);
                 }
 #endif //WIN64 statement close
 #endif //WIN32 statement close
@@ -544,7 +626,7 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &longoffsetvalue, sizeof(uint64_t));
                 }
 
-                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_REL32 && funcptrlocation != NULL) {
+                else if ((coff_reloc_ptr->Type == IMAGE_REL_AMD64_REL32 || coff_reloc_ptr->Type == IMAGE_REL_AMD64_SREL32) && funcptrlocation != NULL) {
                     /* This is Type == 4 relocation code */
                     DEBUG_PRINT("Doing function relocation\n");
                     if (((functionMapping + (functionMappingCount * 8)) - (sectionMapping[counter] + coff_reloc_ptr->VirtualAddress + 4)) > 0xffffffff) {
@@ -559,7 +641,7 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
                     functionMappingCount++;
                 }
-                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_REL32) {
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_REL32 || coff_reloc_ptr->Type == IMAGE_REL_AMD64_SREL32) {
                     /* This shouldn't be needed here, but incase there's a defined symbol
                      * that somehow doesn't have a function, try to resolve it here.*/
                     memcpy(&offsetvalue, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(int32_t));
@@ -591,8 +673,16 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     DEBUG_PRINT("\tSetting 0x%p to OffsetValue: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, offsetvalue);
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
                 }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_AMD64_ADDR32 && funcptrlocation != NULL) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)((uintptr_t)funcptrlocation + addend);
+                    DEBUG_PRINT("\tSetting 0x%p to function address: 0x%X\n", sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, result);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
                 else {
-                    DEBUG_PRINT("No code for relocation type: %d\n", coff_reloc_ptr->Type);
+                    BeaconPrintf(CALLBACK_ERROR, "[COFFLoader] relocation type 0x%04X is not implemented\n", (unsigned int)coff_reloc_ptr->Type);
                 }
 #else
                 if (coff_reloc_ptr->Type == IMAGE_REL_I386_DIR32 && funcptrlocation != NULL){
@@ -620,8 +710,34 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
                     memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &offsetvalue, sizeof(uint32_t));
                     
                 }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_DIR32NB && funcptrlocation != NULL) {
+                    uint32_t result = (uint32_t)(uintptr_t)funcptrlocation;
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_DIR32NB) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)((uintptr_t)sectionMapping[coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber - 1] + coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECTION) {
+                    uint16_t secIndex = (uint16_t)coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].SectionNumber;
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &secIndex, sizeof(uint16_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECREL) {
+                    uint32_t addend = 0;
+                    uint32_t result = 0;
+                    memcpy(&addend, sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, sizeof(uint32_t));
+                    result = (uint32_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value + addend);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint32_t));
+                }
+                else if (coff_reloc_ptr->Type == IMAGE_REL_I386_SECREL7) {
+                    uint8_t result = (uint8_t)(coff_sym_ptr[coff_reloc_ptr->SymbolTableIndex].Value & 0x7F);
+                    memcpy(sectionMapping[counter] + coff_reloc_ptr->VirtualAddress, &result, sizeof(uint8_t));
+                }
                 else {
-                    DEBUG_PRINT("No code for relocation type: %d\n", coff_reloc_ptr->Type);
+                    BeaconPrintf(CALLBACK_ERROR, "[COFFLoader] relocation type 0x%04X is not implemented\n", (unsigned int)coff_reloc_ptr->Type);
                 }
 #endif
 #endif
@@ -672,15 +788,8 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
 
     /* Cleanup the allocated memory */
 #ifdef _WIN32
-    if (callback != NULL)
-    {
-        outdata = BeaconGetOutputData(&outdataSize);
-        if (outdata != NULL)
-        {
-            DEBUG_PRINT("[COFFLoader] Calling Go callback at %p\n", callback);
-            (*callback)(outdata, outdataSize);
-        }
-    }
+    /* Output is streamed to the callback during execution (see
+     * BeaconSetCallback above); nothing to flush here. */
     cleanup :
             if (sectionMapping){
                 for (tempcounter = 0; tempcounter < coff_header_ptr->NumberOfSections; tempcounter++) {
@@ -704,6 +813,11 @@ int RunCOFF(char* functionname, unsigned char* coff_data, uint32_t filesize, uns
             if (entryfuncname && entryfuncname != functionname){
                 free(entryfuncname);
             }
+
+            /* Always drop any impersonation left behind by the BOF and clear
+             * the callback so a later standalone run doesn't stream into it. */
+            BeaconResetTokens();
+            BeaconSetCallback(NULL);
 
             DEBUG_PRINT("Returning\n");
             return retcode;
@@ -732,7 +846,7 @@ int main(int argc, char* argv[]) {
     printf("Got contents of COFF file\n");
     arguments = unhexlify((unsigned char*)argv[3], &argumentSize);
     printf("Running/Parsing the COFF file\n");
-    checkcode = RunCOFF(argv[1], (unsigned char*)coff_data, filesize, arguments, argumentSize);
+    checkcode = RunCOFF(argv[1], (unsigned char*)coff_data, filesize, arguments, argumentSize, NULL);
     if (checkcode == 0) {
 #ifdef _WIN32
         printf("Ran/parsed the coff\n");

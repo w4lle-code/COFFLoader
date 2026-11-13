@@ -4,7 +4,7 @@
  * A Beacon Object File is a light-weight post exploitation tool that runs
  * with Beacon's inline-execute command.
  *
- * Cobalt Strike 4.1.
+ * Cobalt Strike 4.9.
  */
 
 /* data API */
@@ -16,6 +16,7 @@ typedef struct {
 } datap;
 
 DECLSPEC_IMPORT void    BeaconDataParse(datap * parser, char * buffer, int size);
+DECLSPEC_IMPORT char *  BeaconDataPtr(datap * parser, int size);
 DECLSPEC_IMPORT int     BeaconDataInt(datap * parser);
 DECLSPEC_IMPORT short   BeaconDataShort(datap * parser);
 DECLSPEC_IMPORT int     BeaconDataLength(datap * parser);
@@ -42,9 +43,13 @@ DECLSPEC_IMPORT void    BeaconFormatInt(formatp * format, int value);
 #define CALLBACK_OUTPUT_OEM  0x1e
 #define CALLBACK_ERROR       0x0d
 #define CALLBACK_OUTPUT_UTF8 0x20
+#define CALLBACK_FILE        0x02
+#define CALLBACK_FILE_WRITE  0x08
+#define CALLBACK_FILE_CLOSE  0x09
 
 DECLSPEC_IMPORT void   BeaconPrintf(int type, char * fmt, ...);
 DECLSPEC_IMPORT void   BeaconOutput(int type, char * data, int len);
+DECLSPEC_IMPORT BOOL   BeaconDownload(const char * filename, const char * buffer, unsigned int length);
 
 /* Token Functions */
 DECLSPEC_IMPORT BOOL   BeaconUseToken(HANDLE token);
@@ -53,9 +58,55 @@ DECLSPEC_IMPORT BOOL   BeaconIsAdmin();
 
 /* Spawn+Inject Functions */
 DECLSPEC_IMPORT void   BeaconGetSpawnTo(BOOL x86, char * buffer, int length);
+DECLSPEC_IMPORT BOOL   BeaconSpawnTemporaryProcess(BOOL x86, BOOL ignoreToken, STARTUPINFO * sInfo, PROCESS_INFORMATION * pInfo);
 DECLSPEC_IMPORT void   BeaconInjectProcess(HANDLE hProc, int pid, char * payload, int p_len, int p_offset, char * arg, int a_len);
 DECLSPEC_IMPORT void   BeaconInjectTemporaryProcess(PROCESS_INFORMATION * pInfo, char * payload, int p_len, int p_offset, char * arg, int a_len);
 DECLSPEC_IMPORT void   BeaconCleanupProcess(PROCESS_INFORMATION * pInfo);
 
 /* Utility Functions */
 DECLSPEC_IMPORT BOOL   toWideChar(char * src, wchar_t * dst, int max);
+
+/* Beacon Information (CS 4.9) */
+typedef struct {
+	char * ptr;
+	size_t size;
+} HEAP_RECORD;
+
+#define MASK_SIZE 13
+
+typedef struct {
+	char * sleep_mask_ptr;
+	DWORD  sleep_mask_text_size;
+	DWORD  sleep_mask_total_size;
+	char * beacon_ptr;
+	DWORD * sections;
+	HEAP_RECORD * heap_records;
+	char   mask[MASK_SIZE];
+} BEACON_INFO;
+
+DECLSPEC_IMPORT void   BeaconInformation(BEACON_INFO * info);
+
+/* Key/Value store (CS 4.9) */
+DECLSPEC_IMPORT BOOL   BeaconAddValue(const char * key, void * ptr);
+DECLSPEC_IMPORT void * BeaconGetValue(const char * key);
+DECLSPEC_IMPORT BOOL   BeaconRemoveValue(const char * key);
+
+/* Data Store (CS 4.9) */
+#define DATA_STORE_TYPE_EMPTY         0
+#define DATA_STORE_TYPE_GENERAL_FILE  1
+
+typedef struct {
+	int      type;
+	DWORD64  hash;
+	BOOL     masked;
+	char *   buffer;
+	size_t   length;
+} DATA_STORE_OBJECT, *PDATA_STORE_OBJECT;
+
+DECLSPEC_IMPORT PDATA_STORE_OBJECT BeaconDataStoreGetItem(size_t index);
+DECLSPEC_IMPORT void               BeaconDataStoreProtectItem(size_t index);
+DECLSPEC_IMPORT void               BeaconDataStoreUnprotectItem(size_t index);
+DECLSPEC_IMPORT size_t             BeaconDataStoreMaxEntries(void);
+
+/* Beacon User Data (CS 4.9) */
+DECLSPEC_IMPORT char * BeaconGetCustomUserData(void);

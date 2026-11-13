@@ -106,7 +106,12 @@ typedef struct coff_sym {
 #define IMAGE_SCN_MEM_DISCARDABLE 0x02000000
 
 unsigned char* unhexlify(unsigned char* value, int *outlen);
-typedef int (*goCallback)(char *, int);
+#ifndef GOCALLBACK_DEFINED
+#define GOCALLBACK_DEFINED
+/* Callback receives the Beacon output type plus a (buffer, length) pair. The
+ * length is authoritative: output may contain embedded NULs and binary data. */
+typedef int (*goCallback)(int type, char * data, int len);
+#endif
 #ifdef BUILD_DLL
 /* DLL export */
 #define EXPORT __declspec(dllexport)
