@@ -96,6 +96,7 @@ static goCallback g_callback = NULL;
 
 void BeaconSetCallback(goCallback callback) {
     g_callback = callback;
+    printf("[COFFLoader] BeaconSetCallback callback=%p\n", (void*)callback);
 }
 
 void BeaconDataParse(datap* parser, char* buffer, int size) {
@@ -328,6 +329,8 @@ void BeaconPrintf(int type, char* fmt, ...) {
         return;
     }
 
+    printf("[COFFLoader] BeaconPrintf type=%d cb=%p\n", type, (void*)g_callback);
+
     va_list args;
     int length = 0;
     char* stackbuf = NULL;
@@ -372,6 +375,7 @@ void BeaconPrintf(int type, char* fmt, ...) {
 }
 
 void BeaconOutput(int type, char* data, int len) {
+    printf("[COFFLoader] BeaconOutput type=%d len=%d cb=%p\n", type, len, (void*)g_callback);
     if (data == NULL || len <= 0) {
         return;
     }
